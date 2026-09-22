@@ -1,0 +1,33 @@
+# BÁO CÁO TỐI ƯU HÓA HỆ THỐNG IOT SMARTFACTORY
+
+## 1. Chẩn đoán sự cố (Fat Index / Legacy Issue)
+Chỉ mục `idx_fat_covering` (sensor_id, recorded_at, temperature, humidity, status) ban đầu giúp Dashboard đạt tốc độ Đọc (SELECT) cực nhanh nhờ cơ chế **Covering Index** (đọc trực tiếp trên cây B-Tree của Secondary Index mà không cần Lookup về Clustered Index/Primary Key). 
+
+Tuy nhiên, với đặc thù hệ thống IoT 10,000 cảm biến gửi hàng chục nghìn bản ghi mỗi giây:
+- **Write Penalty nghiêm trọng:** Mỗi thao tác INSERT bắt buộc MySQL phải cập nhật và tái cân bằng (rebalance) cây B-Tree của `idx_fat_covering`. Việc đưa thêm các cột biến động liên tục (`temperature`, `humidity`, `status`) khiến các Data Pages liên tục bị phân trang (Page Split), gây thắt cổ chai luồng ghi và làm rớt dữ liệu trên Data Pipeline.
+- **Tốn Storage:** Kích thước Secondary Index tỷ lệ thuận với tổng độ rộng các cột. Đưa cả 3 cột dữ liệu đo lường vào Index khiến `Index_length` vượt qua cả `Data_length` của bảng gốc, làm hóa đơn Cloud SSD tăng gấp 4 lần.
+
+## 2. Giải pháp: Thiết kế Lean Index
+Chúng tôi thay thế bằng Lean Index `idx_lean_search(sensor_id, recorded_at)`:
+- **Nguyên lý:** Index chỉ dùng cho mục đích **Lọc (Filtering)** và **Định vị phạm vi (Range Scan)** trong mệnh đề `WHERE`. Các cột dữ liệu đo lường (`temperature`, `humidity`, `status`) sẽ được lấy thông qua thao tác **Bookmark Lookup** về Clustered Index.
+
+## 3. Đánh giá sự đánh đổi (Trade-off Analysis)
+- **Tốc độ SELECT:** Chậm hơn khoảng một vài phần nghìn giây do mất tính chất Covering Index (MySQL phải đọc từ Index rồi tra ngược vào Table để lấy `temperature`, `humidity`, `status`). Kết quả EXPLAIN cho thấy cột `key` nhận `idx_lean_search`, cột `type` đạt `range`/`ref`, và cột `Extra` không còn chữ `Using index`.
+- **Tốc độ INSERT:** Tăng lên gấp 4 - 5 lần nhờ cấu trúc B-Tree nhẹ hơn đáng kể, giải quyết triệt để sự cố thắt cổ chai luồng ghi.
+- **Lưu trữ (Storage):** Dung lượng `Index_length` giảm hơn 70%, giải phóng RAM Buffer Pool và giảm chi phí Cloud SSD.
+
+---
+
+## 4. Trả lời câu hỏi bảo vệ vấn đáp
+
+1. **Nếu bảng là 'Countries' (ít cập nhật) thì Covering Index có phải tội ác không?**
+   - Không. Đối với bảng dữ liệu tĩnh/đọc nhiều ghi ít (Read-Heavy) như `Countries`, **Write Penalty hầu như bằng 0** vì hiếm khi INSERT/UPDATE. Dùng Covering Index giúp tối đa hóa tốc độ SELECT mà không gây tác hại về vận hành hay tốn kém lưu trữ đáng kể.
+
+2. **Khái niệm 'Write Penalty' là gì? Tại sao thêm 1 cột lại làm INSERT chậm?**
+   - **Write Penalty** là chi phí hiệu năng phát sinh cho các thao tác ghi (INSERT/UPDATE/DELETE) để duy trì cấu trúc cây B+Tree của Index.
+   - Khi chèn một bản ghi mới, MySQL phải tìm vị trí và chèn Node mới vào **tất cả** các cây Secondary Index. Thêm cột làm kích thước mỗi Node lớn hơn, làm giảm số lượng key trên mỗi Data Page, khiến cây phình to và dễ gây hiện tượng **Page Split** (tách trang), tốn thêm nhiều I/O đĩa và CPU.
+
+3. **Thay thế `VARCHAR(20)` của `status` thành `TINYINT` ảnh hưởng thế nào?**
+   - `VARCHAR(20)` (utf8mb4) tốn tối đa khoảng $81 \text{ Bytes}$/dòng, trong khi `TINYINT` chỉ tốn **$1 \text{ Byte}$**.
+   - **Data Length:** Giúp giảm dung lượng bảng dữ liệu gốc đi đáng kể.
+   - **Index Length:** Nếu lỡ đưa `status` vào Index, đổi sang `TINYINT` giúp giảm kích thước Index Key, giúp mỗi Data Page (16KB) chứa được nhiều key hơn, giảm độ sâu của cây B+Tree và tiết kiệm đáng kể `Index_length`.

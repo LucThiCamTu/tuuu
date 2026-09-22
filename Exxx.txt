@@ -1,0 +1,28 @@
+-- ========================================================
+-- SMARTFACTORY DATABASE RE-INDEXING SCRIPT
+-- Role: Database Optimization Expert
+-- ========================================================
+
+USE smartfactory_db;
+
+-- Bước 1: Kiểm tra dung lượng bảng và index hiện tại
+SHOW TABLE STATUS LIKE 'SensorLogs';
+
+-- Kiểm tra truy vấn Dashboard với Fat Index cũ
+EXPLAIN SELECT temperature, humidity, status 
+FROM SensorLogs 
+WHERE sensor_id = 105 AND recorded_at >= '2026-06-20';
+
+-- Bước 2: Xóa bỏ "Fat Index" gây nghẽn luồng ghi và tốn ổ đĩa
+ALTER TABLE SensorLogs DROP INDEX idx_fat_covering;
+
+-- Bước 3: Tạo "Lean Index" tối ưu (chỉ chứa các cột lọc trong WHERE/ORDER BY)
+CREATE INDEX idx_lean_search ON SensorLogs(sensor_id, recorded_at);
+
+-- Bước 4: Kiểm tra lại dung lượng sau khi tối ưu
+SHOW TABLE STATUS LIKE 'SensorLogs';
+
+-- Bước 5: Chạy lệnh EXPLAIN chứng minh câu truy vấn Dashboard vẫn tối ưu
+EXPLAIN SELECT temperature, humidity, status 
+FROM SensorLogs 
+WHERE sensor_id = 105 AND recorded_at >= '2026-06-20';

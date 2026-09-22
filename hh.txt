@@ -1,0 +1,36 @@
+# AI PROMPT LOG & BYTE CALCULATION
+
+## Prompt 1: Tra cứu kiến trúc Clustered Index & Secondary Index trong MySQL
+**User:** 
+"Giải thích cơ chế Clustered Index và Secondary Index trong MySQL InnoDB. Khi nào thì xảy ra Bookmark Lookup?"
+
+**AI Response:**
+- InnoDb lưu bảng dưới dạng Clustered Index (Primary Key chứa toàn bộ dữ liệu dòng).
+- Secondary Index chỉ lưu [Index Keys] + [Primary Key Value].
+- Bookmark Lookup (hoặc Table Lookup) xảy ra khi câu lệnh SELECT yêu cầu các cột không nằm trong Secondary Index, buộc MySQL phải dùng Primary Key lấy được từ Secondary Index để tra ngược vào Clustered Index lấy nốt các cột còn lại.
+
+---
+
+## Prompt 2: Tính toán dung lượng Byte (Byte Calculation)
+**User:** 
+"Tính toán dung lượng chính xác trên mỗi bản ghi (Row Byte Size) của `idx_fat_covering` so với `idx_lean_search` trong MySQL InnoDB (giả định mã hóa utf8mb4)."
+
+**AI Response:**
+Cấu trúc mỗi dòng trong Secondary Index = `[Index Columns]` + `[Primary Key log_id (BIGINT = 8 Bytes)]`.
+
+1. **Kích thước `idx_fat_covering`:**
+   - `sensor_id` (INT): 4 Bytes
+   - `recorded_at` (DATETIME): 5 Bytes
+   - `temperature` (DECIMAL(5,2)): 3 Bytes
+   - `humidity` (DECIMAL(5,2)): 3 Bytes
+   - `status` (VARCHAR(20) utf8mb4 trung bình): ~20 Bytes
+   - `log_id` (Primary Key Pointer): 8 Bytes
+   => **Tổng cộng ~ 43 Bytes / record**.
+
+2. **Kích thước `idx_lean_search`:**
+   - `sensor_id` (INT): 4 Bytes
+   - `recorded_at` (DATETIME): 5 Bytes
+   - `log_id` (Primary Key Pointer): 8 Bytes
+   => **Tổng cộng ~ 17 Bytes / record**.
+
+**Kết luận:** Lean Index giúp giảm kích thước bản ghi trên cây Index từ **43 Bytes xuống 17 Bytes (Giảm ~60.4%)**, giúp tiết kiệm hàng Gigabyte RAM và ổ đĩa SSD khi bảng đạt hàng trăm triệu dòng.
